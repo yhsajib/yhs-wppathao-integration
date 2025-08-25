@@ -51,6 +51,21 @@ class PDM_WooCommerce_Integration {
      * Add meta boxes to order edit page
      */
     public function add_order_meta_boxes() {
+        // Support both legacy and HPOS order systems
+        $screen = wc_get_container()->get( \Automattic\WooCommerce\Internal\DataStores\Orders\CustomOrdersTableController::class )->custom_orders_table_usage_is_enabled()
+            ? wc_get_page_screen_id( 'shop-order' )
+            : 'shop_order';
+            
+        add_meta_box(
+            'pdm_delivery_actions',
+            __('Pathao Delivery Manager', 'pathao-delivery-manager'),
+            array($this, 'render_delivery_meta_box'),
+            $screen,
+            'side',
+            'high'
+        );
+        
+        // Also add for legacy post type to ensure compatibility
         add_meta_box(
             'pdm_delivery_actions',
             __('Pathao Delivery Manager', 'pathao-delivery-manager'),
@@ -480,8 +495,9 @@ class PDM_WooCommerce_Integration {
      * Check address patterns
      */
     private function check_address_patterns($order) {
-        $address = $order->get_shipping_address_1() . ' ' . $order->get_shipping_address_2();
-        $city = $order->get_shipping_city();
+        // Use billing address first, fallback to shipping
+        $address = $this->get_recipient_address($order);
+        $city = $this->get_recipient_city($order);
         
         $suspicious = false;
         $reasons = array();
@@ -668,7 +684,7 @@ class PDM_WooCommerce_Integration {
         // For now, we'll simulate the validation
         
         $phone = $order->get_billing_phone();
-        $address = $order->get_shipping_address_1();
+        $address = $this->get_recipient_address($order);
         
         $suspicious = false;
         $reason = '';
@@ -714,6 +730,12 @@ class PDM_WooCommerce_Integration {
             throw new Exception(__('Pathao API credentials not configured.', 'pathao-delivery-manager'));
         }
         
+        // Get recipient details - prioritize billing address, fallback to shipping
+        $recipient_name = $this->get_recipient_name($order);
+        $recipient_address = $this->get_recipient_address($order);
+        $recipient_city = $this->get_recipient_city($order);
+        $recipient_zone = $this->get_recipient_zone($order);
+        
         // Prepare delivery data
         $delivery_data = array(
             'store_id' => $api_settings['store_id'],
@@ -721,11 +743,11 @@ class PDM_WooCommerce_Integration {
             'sender_name' => $api_settings['sender_name'],
             'sender_phone' => $api_settings['sender_phone'],
             'sender_address' => $api_settings['sender_address'],
-            'recipient_name' => $order->get_shipping_first_name() . ' ' . $order->get_shipping_last_name(),
+            'recipient_name' => $recipient_name,
             'recipient_phone' => $order->get_billing_phone(),
-            'recipient_address' => $order->get_shipping_address_1() . ' ' . $order->get_shipping_address_2(),
-            'recipient_city' => $order->get_shipping_city(),
-            'recipient_zone' => $order->get_shipping_state(),
+            'recipient_address' => $recipient_address,
+            'recipient_city' => $recipient_city,
+            'recipient_zone' => $recipient_zone,
             'delivery_type' => 48, // Normal delivery
             'item_type' => 2, // Parcel
             'special_instruction' => $order->get_customer_note(),
@@ -753,6 +775,59 @@ class PDM_WooCommerce_Integration {
                 'message' => __('Failed to send order to delivery.', 'pathao-delivery-manager')
             );
         }
+    }
+    
+    /**
+     * Get recipient name - prioritize billing, fallback to shipping
+     */
+    private function get_recipient_name($order) {
+        $billing_first = $order->get_billing_first_name();
+        $billing_last = $order->get_billing_last_name();
+        
+        if (!empty($billing_first) || !empty($billing_last)) {
+            return trim($billing_first . ' ' . $billing_last);
+        }
+        
+        return trim($order->get_shipping_first_name() . ' ' . $order->get_shipping_last_name());
+    }
+    
+    /**
+     * Get recipient address - prioritize billing, fallback to shipping
+     */
+    private function get_recipient_address($order) {
+        $billing_address = trim($order->get_billing_address_1() . ' ' . $order->get_billing_address_2());
+        
+        if (!empty($billing_address)) {
+            return $billing_address;
+        }
+        
+        return trim($order->get_shipping_address_1() . ' ' . $order->get_shipping_address_2());
+    }
+    
+    /**
+     * Get recipient city - prioritize billing, fallback to shipping
+     */
+    private function get_recipient_city($order) {
+        $billing_city = $order->get_billing_city();
+        
+        if (!empty($billing_city)) {
+            return $billing_city;
+        }
+        
+        return $order->get_shipping_city();
+    }
+    
+    /**
+     * Get recipient zone/state - prioritize billing, fallback to shipping
+     */
+    private function get_recipient_zone($order) {
+        $billing_state = $order->get_billing_state();
+        
+        if (!empty($billing_state)) {
+            return $billing_state;
+        }
+        
+        return $order->get_shipping_state();
     }
     
     /**
